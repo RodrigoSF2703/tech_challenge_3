@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   db:
     image: postgres:13
@@ -8,9 +6,11 @@ services:
       POSTGRES_PASSWORD: mypassword
       POSTGRES_DB: mydatabase
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - db-volume:/var/lib/postgresql/data 
     ports:
       - "5432:5432"
+    networks:
+      - tc3-network
 
   api:
     build: .
@@ -21,4 +21,24 @@ services:
       - "8000:8000"
     depends_on:
       - db
+    networks:
+      - tc3-network
+    restart: always
 
+  web:
+    build: .
+    ports:
+      - 8501:8501
+    volumes:
+      - .:/app
+    command: streamlit run frontend/interface.py
+    depends_on:
+      - api
+    networks:
+      - tc3-network
+
+volumes:
+  db-volume:
+
+networks:
+  tc3-network:

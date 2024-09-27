@@ -1,66 +1,77 @@
-from fastapi import FastAPI, Depends
-from sqlalchemy.orm import Session
+from fastapi import FastAPI
 import requests
 import datetime
 import pandas as pd
 import json
 from .sanitize import Sanitize
-from .database import SessionLocal, engine
-from . import models
+from .database import engine
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
+import os
 
-
-# Inicializa a aplicação FastAPI
 app = FastAPI()
 
-# Inicializa o banco de dados
-models.Base.metadata.create_all(bind=engine)
-
-
-# Função para obter a sessão do banco de dados
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-# Endpoint para coletar os dados
-@app.post("/collect/")
-def download_and_extract(db: Session = Depends(get_db)):
-    # Obtém a data atual
+@app.get("/extract-data")
+def download_and_extract():
     current_date = datetime.datetime.now().strftime("%Y-%m-%d")
 
-    # URL de origem dos dados
     url = "https://sistemaswebb3-listados.b3.com.br/indexProxy/indexCall/GetPortfolioDay/eyJsYW5ndWFnZSI6InB0LWJyIiwicGFnZU51bWJlciI6MSwicGFnZVNpemUiOjEyMCwiaW5kZXgiOiJJQk9WIiwic2VnbWVudCI6IjIifQ=="
 
-    # Faz a requisição HTTP
     response = requests.get(url, verify=False)
 
     if response.ok:
-        # Processa a resposta
         response = json.loads(response.content.decode()).get("results")
         df = pd.DataFrame(response)
 
-        # Limpeza e sanitização dos dados usando o sanitize.py
         df = Sanitize.clean_df(df)
         df["data_pregao"] = current_date
-
-        # Armazena os dados no banco de dados
-        for index, row in df.iterrows():
-            db_data = models.B3Data(
-                setor=row['setor'],
-                codigo=row['codigo'],
-                acao=row['acao'],
-                tipo=row['tipo'],
-                quantidade_teorica=row['quantidade_teorica'],
-                porcentagem_participacao=row['porcentagem_participacao'],
-                porcentagem_participacao_acumulada=row['porcentagem_participacao_acumulada'],
-                data_pregao=row['data_pregao']
-            )
-            db.add(db_data)
-        db.commit()
+        df.to_sql("b3_data",engine,index=False, if_exists="replace")
 
         return {"message": "Dados coletados e armazenados com sucesso!"}
     else:
         return {"error": "Erro ao coletar os dados"}
+
+@app.get("/training-model")
+def trainingModel():
+    df = pd.read_sql("b3_data", engine)
+    df_scaled = __get_scaled_data(df)
+    
+    kmeans = KMeans(n_clusters=2, random_state=0)
+    kmeans.fit(df_scaled)
+    df['Cluster'] = kmeans.fit_predict(df_scaled)
+
+    return df.to_json(orient='records')
+
+@app.get("/optimal-centroid-number")
+def best_value_for_k_elbow_method():
+    WSS = []
+    K = range(1, 10)
+
+    df = pd.read_sql("b3_data", engine)
+    scaled_data = __get_scaled_data(df)
+    
+    for k in K:
+        kmeansInstance = KMeans(n_clusters=k)
+        kmeansInstance.fit(scaled_data)
+        WSS.append(kmeansInstance.inertia_)
+
+    plt.figure(figsize=(10,5))
+    plt.plot(K, WSS, '-bo')
+    plt.xlabel('k')
+    plt.ylabel('WSS')
+    plt.title('Elbow Method - Optimal Centroid Number')
+    
+    images_dir = 'images'
+    if not os.path.exists(images_dir):
+        os.makedirs(images_dir)
+    
+    file_path = os.path.join(images_dir, 'elbow_method.png')
+
+    plt.savefig(file_path, format='png')
+
+    return {"message": f"Gráfico salvo em: {file_path}"}
+ 
+def __get_scaled_data(df):
+    scaler = StandardScaler()
+    return scaler.fit_transform(df[['quantidade_teorica', 'porcentagem_participacao']])
